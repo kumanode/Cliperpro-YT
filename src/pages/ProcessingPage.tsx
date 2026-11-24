@@ -1,12 +1,13 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, CheckCircle2, Loader2, Circle, AlertCircle, Copy, Check } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Loader2, Circle, AlertCircle, Copy, Check, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useProcessingStore, type Step } from "@/stores/processingStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useAppStore } from "@/stores/appStore";
 import { findHighlights, findLocalHighlights } from "@/hooks/highlights";
+import { cancelActiveJob } from "@/hooks/appConfig";
 import { formatLogTime } from "@/utils/format";
 import { toast } from "sonner";
 
@@ -40,6 +41,10 @@ export function ProcessingPage() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
   const [copied, setCopied] = useState(false);
+  const [transcribeProgress, setTranscribeProgress] = useState<{
+    pct: number;
+    detail: string;
+  } | null>(null);
 
   const copyLog = useCallback(async () => {
     const text = logLines
@@ -76,6 +81,15 @@ export function ProcessingPage() {
               onLog: (message) => {
                 appendLog({ level: levelForMessage(message), message, ts: Date.now() });
                 const m = message.toLowerCase();
+                const pctMatch = message.match(/transkripsi lokal:\s*(\d+)%\s*\(([^)]+)\)/i);
+                if (pctMatch) {
+                  setTranscribeProgress({
+                    pct: Math.min(100, Math.max(0, Number(pctMatch[1]))),
+                    detail: pctMatch[2],
+                  });
+                } else if (m.includes("transkripsi lokal selesai")) {
+                  setTranscribeProgress({ pct: 100, detail: "Selesai" });
+                }
                 if (m.includes("finding highlights")) {
                   updateStep(0, "done");
                   updateStep(1, "running");
@@ -92,6 +106,15 @@ export function ProcessingPage() {
               onLog: (message) => {
                 appendLog({ level: levelForMessage(message), message, ts: Date.now() });
                 const m = message.toLowerCase();
+                const pctMatch = message.match(/transkripsi lokal:\s*(\d+)%\s*\(([^)]+)\)/i);
+                if (pctMatch) {
+                  setTranscribeProgress({
+                    pct: Math.min(100, Math.max(0, Number(pctMatch[1]))),
+                    detail: pctMatch[2],
+                  });
+                } else if (m.includes("transkripsi lokal selesai")) {
+                  setTranscribeProgress({ pct: 100, detail: "Selesai" });
+                }
                 if (m.includes("finding highlights")) {
                   updateStep(0, "done");
                   updateStep(1, "running");
@@ -128,14 +151,35 @@ export function ProcessingPage() {
 
   return (
     <div className="space-y-5">
-      <Button
-        variant="ghost"
-        onClick={() => navigate("/")}
-        className="gap-2 text-[var(--color-text-secondary)]"
-      >
-        <ArrowLeft className="w-4 h-4" />
-        Back
-      </Button>
+      <div className="flex items-center justify-between gap-2">
+        <Button
+          variant="ghost"
+          onClick={() => navigate("/")}
+          className="gap-2 text-[var(--color-text-secondary)]"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back
+        </Button>
+
+        {isProcessing && !error && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                await cancelActiveJob();
+                toast.info("Membatalkan proses...");
+              } catch (e) {
+                toast.error(String(e));
+              }
+            }}
+            className="gap-1.5 text-[var(--color-error)] border-[var(--color-error)]"
+          >
+            <Square className="w-3.5 h-3.5" />
+            Cancel
+          </Button>
+        )}
+      </div>
 
       <div>
         <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
@@ -176,6 +220,20 @@ export function ProcessingPage() {
             </div>
           ))}
         </div>
+        {transcribeProgress && isProcessing && (
+          <div className="mt-3 pt-3 border-t border-[var(--color-border-light)] space-y-1.5">
+            <div className="flex items-center justify-between text-xs text-[var(--color-text-secondary)]">
+              <span>Transkripsi lokal ({transcribeProgress.detail})</span>
+              <span className="font-semibold">{transcribeProgress.pct}%</span>
+            </div>
+            <div className="h-2 w-full bg-[var(--color-bg-secondary)] border border-[var(--color-border)] overflow-hidden">
+              <div
+                className="h-full bg-[var(--color-accent)] transition-all duration-300"
+                style={{ width: `${transcribeProgress.pct}%` }}
+              />
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* Log console (toggleable in Settings → Appearance) */}

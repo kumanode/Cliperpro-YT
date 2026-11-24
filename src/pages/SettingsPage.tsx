@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Cpu, Loader2, RefreshCw, Zap, ChevronRight, Sun, Moon } from "lucide-react";
+import { Cpu, HardDrive, Loader2, RefreshCw, Trash2, Zap, ChevronRight, Sun, Moon } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { SettingRow, SettingSection } from "@/components/settings/SettingRow";
-import { detectGpu, type GpuDetection } from "@/hooks/appConfig";
+import {
+  cleanupStorage,
+  detectGpu,
+  getStorageSummary,
+  type GpuDetection,
+  type StorageSummary,
+} from "@/hooks/appConfig";
 import { useConfigStore } from "@/stores/configStore";
 
 export function SettingsPage() {
@@ -16,6 +22,21 @@ export function SettingsPage() {
   const [detection, setDetection] = useState<GpuDetection | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [storage, setStorage] = useState<StorageSummary | null>(null);
+  const [loadingStorage, setLoadingStorage] = useState(false);
+  const [cleaningStorage, setCleaningStorage] = useState(false);
+
+  const loadStorage = async () => {
+    setLoadingStorage(true);
+    try {
+      const summary = await getStorageSummary();
+      setStorage(summary);
+    } catch (err) {
+      console.error("Storage summary failed", err);
+    } finally {
+      setLoadingStorage(false);
+    }
+  };
 
   useEffect(() => {
     load();
@@ -36,6 +57,7 @@ export function SettingsPage() {
 
   useEffect(() => {
     runDetect();
+    loadStorage();
   }, []);
 
   const gpuEnabled = config.gpuAcceleration.enabled;
@@ -188,6 +210,137 @@ export function SettingsPage() {
             )}
           </span>
         </SettingRow>
+      </SettingSection>
+
+      <SettingSection
+        title="Storage Manager"
+        description="Pantau dan bersihkan cache video sumber (Download Once), model Whisper lokal, dan session."
+      >
+        <SettingRow
+          title="Total Pemakaian Disk"
+          description={
+            loadingStorage && !storage
+              ? "Menghitung ukuran cache..."
+              : storage
+                ? `Total ${storage.total_mb.toLocaleString("id-ID")} MB · Source Videos: ${storage.source_videos.size_mb.toLocaleString("id-ID")} MB (${storage.source_videos.count} file) · Sessions: ${storage.sessions.size_mb.toLocaleString("id-ID")} MB (${storage.sessions.count}) · Whisper Models: ${storage.whisper_models.size_mb.toLocaleString("id-ID")} MB (${storage.whisper_models.count})`
+                : "Klik Refresh untuk memeriksa ukuran cache."
+          }
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={loadStorage}
+            disabled={loadingStorage}
+            className="gap-1.5"
+          >
+            <RefreshCw className={`w-4 h-4 ${loadingStorage ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </SettingRow>
+
+        <SettingRow
+          title="Bersihkan Source Video Lama (> 7 hari)"
+          description="Menghapus cache full video YouTube yang lebih tua dari 7 hari. Klip yang sudah dirender tetap aman."
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={cleaningStorage || !storage || storage.source_videos.count === 0}
+            onClick={async () => {
+              setCleaningStorage(true);
+              try {
+                const res = await cleanupStorage({
+                  action: "source_videos_older_than",
+                  olderThanDays: 7,
+                });
+                toast.success(
+                  res.deleted_count > 0
+                    ? `${res.deleted_count} source video dihapus (${res.freed_mb} MB dibebaskan)`
+                    : "Tidak ada source video yang lebih tua dari 7 hari"
+                );
+                await loadStorage();
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : String(err));
+              } finally {
+                setCleaningStorage(false);
+              }
+            }}
+            className="gap-1.5"
+          >
+            {cleaningStorage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+            Bersihkan &gt; 7 Hari
+          </Button>
+        </SettingRow>
+
+        {storage && storage.source_videos.items.length > 0 && (
+          <div className="px-4 py-3 border-t border-[var(--color-border-light)] space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-[var(--color-text-secondary)] flex items-center gap-1.5">
+                <HardDrive className="w-3.5 h-3.5" />
+                Cached Source Videos ({storage.source_videos.items.length})
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={cleaningStorage}
+                onClick={async () => {
+                  if (!window.confirm("Hapus semua cache source video? Klip yang sudah dirender tetap aman.")) return;
+                  setCleaningStorage(true);
+                  try {
+                    const res = await cleanupStorage({ action: "all_source_videos" });
+                    toast.success(`${res.deleted_count} file dihapus (${res.freed_mb} MB dibebaskan)`);
+                    await loadStorage();
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setCleaningStorage(false);
+                  }
+                }}
+                className="h-7 px-2 text-xs text-[var(--color-error)]"
+              >
+                Hapus Semua
+              </Button>
+            </div>
+            <div className="max-h-40 overflow-y-auto space-y-1">
+              {storage.source_videos.items.map((item) => (
+                <div
+                  key={item.filename}
+                  className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-[var(--color-bg-secondary)] text-xs"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-[var(--color-text-primary)]">{item.filename}</p>
+                    <p className="text-[11px] text-[var(--color-text-muted)]">
+                      {item.size_mb.toLocaleString("id-ID")} MB · {item.age_days} hari lalu
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={cleaningStorage}
+                    onClick={async () => {
+                      setCleaningStorage(true);
+                      try {
+                        const res = await cleanupStorage({
+                          action: "source_video_file",
+                          filename: item.filename,
+                        });
+                        toast.success(`${item.filename} dihapus (${res.freed_mb} MB)`);
+                        await loadStorage();
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : String(err));
+                      } finally {
+                        setCleaningStorage(false);
+                      }
+                    }}
+                    className="h-7 px-2 text-xs shrink-0"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </SettingSection>
 
       <SettingSection

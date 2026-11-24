@@ -153,6 +153,8 @@ export function ProcessConfirmDialog({ clipCount, captionsAvailable = true, onCo
   const [splitWebcamName, setSplitWebcamName] = useState(() => fileNameOf(config.processDialog.splitWebcamPath));
   const [splitMainVolume, setSplitMainVolume] = useState(config.processDialog.splitMainVolume);
   const [splitSecondVolume, setSplitSecondVolume] = useState(config.processDialog.splitSecondVolume);
+  const [bgmPath, setBgmPath] = useState("");
+  const [bgmVolume, setBgmVolume] = useState(20);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [activePreset, setActivePreset] = useState<string | null>(null);
 
@@ -444,6 +446,8 @@ export function ProcessConfirmDialog({ clipCount, captionsAvailable = true, onCo
         mainVolume: splitMainVolume / 100,
         secondVolume: splitSecondVolume / 100,
       },
+      bgmPath: bgmPath.trim() || undefined,
+      bgmVolume: bgmPath.trim() ? bgmVolume / 100 : undefined,
     });
   };
 
@@ -914,6 +918,66 @@ export function ProcessConfirmDialog({ clipCount, captionsAvailable = true, onCo
                   <Switch checked={opt.enabled} onCheckedChange={opt.onToggle} disabled={opt.disabled} />
                 </div>
               ))}
+
+              {/* Background Music (BGM) with Auto-Ducking */}
+              <div className="p-3 rounded-[var(--radius-sm)] bg-[var(--color-bg-secondary)] space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Volume2 className="w-4 h-4 text-[var(--color-accent)] shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-[var(--color-text-primary)]">
+                        Background Music (Auto-Ducking)
+                      </p>
+                      <p className="text-xs text-[var(--color-text-muted)] truncate">
+                        {bgmPath ? bgmPath.split(/[\\/]/).pop() : "Opsional — musik otomatis mengecil saat ada suara bicara"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        const picked = await open({
+                          multiple: false,
+                          filters: [{ name: "Audio", extensions: ["mp3", "wav", "m4a", "aac", "ogg"] }],
+                        });
+                        if (typeof picked === "string" && picked) setBgmPath(picked);
+                      }}
+                      className="h-7 px-2 text-xs"
+                    >
+                      {bgmPath ? "Ganti" : "Pilih Audio"}
+                    </Button>
+                    {bgmPath && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setBgmPath("")}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {bgmPath && (
+                  <div className="space-y-1 pt-1">
+                    <div className="flex items-center justify-between text-xs text-[var(--color-text-muted)]">
+                      <span>Volume BGM</span>
+                      <span className="font-medium text-[var(--color-text-primary)]">{bgmVolume}%</span>
+                    </div>
+                    <Slider
+                      value={[bgmVolume]}
+                      min={5}
+                      max={60}
+                      step={5}
+                      onValueChange={([v]) => setBgmVolume(v)}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

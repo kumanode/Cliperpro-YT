@@ -25,6 +25,8 @@ from .caption_generator import generate_captions_from_words
 from .srt_parser import parse_srt_segments, parse_timestamp
 from .watermark import apply_watermark
 from .helpers import get_ffmpeg_path
+from .job_control import check_cancelled
+from .overlay_compositor import compose_clip_overlays
 
 
 def sanitize_clip_filename(title: str) -> str:
@@ -95,6 +97,49 @@ def _words_for_clip(
             continue
         sliced.append({"word": w["word"], "start": rel_start, "end": rel_end})
     return sliced
+
+
+def _apply_caption_override(
+    clip_words: list[dict[str, Any]],
+    override_text: str | None,
+    clip_duration: float,
+) -> list[dict[str, Any]]:
+    """Apply user-edited caption text over a clip's word timings.
+
+    When the edited word count matches ``clip_words``, existing per-word
+    timestamps are preserved verbatim. Otherwise the edited words are evenly
+    distributed across the original speech span (or ``[0, clip_duration]``).
+    """
+    raw = (override_text or "").strip()
+    if not raw:
+        return clip_words
+    tokens = [t for t in raw.split() if t]
+    if not tokens:
+        return clip_words
+    if clip_words and len(tokens) == len(clip_words):
+        return [
+            {
+                "word": tok,
+                "start": float(orig["start"]),
+                "end": float(orig["end"]),
+            }
+            for tok, orig in zip(tokens, clip_words)
+        ]
+    span_start = float(clip_words[0]["start"]) if clip_words else 0.0
+    span_end = (
+        float(clip_words[-1]["end"])
+        if clip_words and float(clip_words[-1]["end"]) > span_start
+        else max(span_start + 1.0, float(clip_duration or len(tokens) * 0.4))
+    )
+    step = (span_end - span_start) / len(tokens)
+    return [
+        {
+            "word": tok,
+            "start": span_start + idx * step,
+            "end": span_start + (idx + 1) * step,
+        }
+        for idx, tok in enumerate(tokens)
+    ]
 
 
 def _load_session_channel(session_path: Path) -> str:
@@ -313,6 +358,17 @@ def process_selected_highlights(
     # Mode for second pane: "landscape" (default) or "portrait"
     second_pane_mode = split_screen.get("secondPaneMode", "portrait")
 
+    # Optional background music (BGM) with auto-ducking
+    bgm_path = (options.get("bgmPath") or "").strip() or None
+    if bgm_path and not Path(bgm_path).exists():
+        log(f"BGM disabled: audio file not found at {bgm_path}")
+        bgm_path = None
+    try:
+        bgm_volume = float(options.get("bgmVolume", 0.2))
+    except (TypeError, ValueError):
+        bgm_volume = 0.2
+    bgm_volume = max(0.02, min(1.0, bgm_volume))
+
     # Word-level caption timing for the full source video (from the original
     # subtitle track). Empty if unavailable — captions are then skipped.
     caption_words = _load_caption_words(session_path, log) if add_captions else []
@@ -320,6 +376,7 @@ def process_selected_highlights(
         log("Captions requested but no subtitle word-timing available — clips will have no captions")
 
     for i, h in enumerate(highlights, 1):
+        check_cancelled()
         log(f"Processing clip {i}/{total}: {h.get('title', 'Untitled')}")
 
         # Use highlight_index from the highlight data if available (for dedup)
@@ -424,53 +481,21 @@ def process_selected_highlights(
             video_path = _run_portrait(video_path, portrait_path, options, log, gpu_config)
             log(f"[{i}/{total}] Portrait conversion complete")
 
-        # Step 3: Hook generation (text overlay on the opening seconds)
-        if add_hook:
-            hook_text = h.get("hook_text", "")
-            if hook_text:
-                hook_style = ai.get("hook_style") or {}
-                hook_duration = hook_style.get("duration_seconds", 5.0)
+        check_cancelled()
 
-                hook_output_path = str(temp_dir / f"hooked_{i:03d}.mp4")
-                video_path = generate_hook(
-                    input_video_path=video_path,
-                    hook_text=hook_text,
-                    output_path=hook_output_path,
-                    duration=hook_duration,
-                    hook_style=hook_style,
-                    log=log,
-                    gpu_config=gpu_config,
-                )
-                log(f"[{i}/{total}] Hook generation complete")
-            else:
-                log(f"[{i}/{total}] No hook text, skipping hook generation")
-        else:
-            log(f"[{i}/{total}] Hook generation skipped (disabled)")
+        # Resolve hook, caption words, and watermark configs for this clip
+        hook_text = (h.get("hook_text") or "").strip() if add_hook else ""
+        hook_style = (ai.get("hook_style") or {}) if hook_text else None
+        hook_duration = (hook_style or {}).get("duration_seconds", 5.0)
 
-        # Step 4: Caption generation (word-by-word, from original subtitle track)
         clip_had_captions = False
         clip_start = parse_timestamp(h["start_time"])
         clip_end = parse_timestamp(h["end_time"])
+        clip_duration = max(1.0, clip_end - clip_start)
+        clip_words: list[dict[str, Any]] = []
         if add_captions and caption_words:
             clip_words = _words_for_clip(caption_words, clip_start, clip_end)
-
-            if clip_words:
-                caption_output_path = str(temp_dir / f"captioned_{i:03d}.mp4")
-                video_path = generate_captions_from_words(
-                    input_video_path=video_path,
-                    output_path=caption_output_path,
-                    words=clip_words,
-                    caption_style=caption_style,
-                    log=log,
-                    gpu_config=gpu_config,
-                )
-                clip_had_captions = True
-                log(f"[{i}/{total}] Caption generation complete ({len(clip_words)} words)")
-            else:
-                log(f"[{i}/{total}] No subtitle words in this clip's range — captions skipped")
         elif add_captions and local_path:
-            # Local source: captions use segment timing from the Whisper
-            # transcription SRT (segment-level, not word-by-word).
             local_srt = session_path / "transcript.srt"
             if local_srt.exists():
                 segments = [
@@ -486,6 +511,70 @@ def process_selected_highlights(
                     for s in segments
                     if str(s["text"]).strip()
                 ]
+        if add_captions:
+            clip_words = _apply_caption_override(
+                clip_words,
+                h.get("captionOverrideText"),
+                clip_duration,
+            )
+
+        wm_config = ai.get("watermark") if add_watermark else None
+        credit_config = (
+            _resolve_credit_text(
+                ai.get("credit_watermark"),
+                options,
+                session_path,
+                log,
+            )
+            if add_credit_watermark
+            else None
+        )
+
+        has_any_overlay = bool(
+            hook_text
+            or clip_words
+            or (wm_config and wm_config.get("image_path") and Path(wm_config["image_path"]).exists())
+            or (credit_config and credit_config.get("text"))
+            or bgm_path
+        )
+
+        # Steps 3-5 combined: Single-pass FFmpeg compose (hook + captions + watermark + BGM)
+        if has_any_overlay:
+            composed_path = str(temp_dir / f"composed_{i:03d}.mp4")
+            try:
+                video_path = compose_clip_overlays(
+                    input_video_path=video_path,
+                    output_path=composed_path,
+                    hook_text=hook_text or None,
+                    hook_style=hook_style,
+                    caption_words=clip_words or None,
+                    caption_style=caption_style,
+                    watermark=wm_config,
+                    credit_watermark=credit_config,
+                    bgm_path=bgm_path,
+                    bgm_volume=bgm_volume,
+                    log=lambda m: log(f"[{i}/{total}] {m}"),
+                    gpu_config=gpu_config,
+                )
+                clip_had_captions = bool(clip_words)
+                log(f"[{i}/{total}] Single-pass overlay compose complete")
+            except Exception as compose_err:
+                log(
+                    f"[{i}/{total}] Single-pass compose failed ({str(compose_err)[:200]}), "
+                    "falling back to sequential passes..."
+                )
+                if hook_text:
+                    hook_output_path = str(temp_dir / f"hooked_{i:03d}.mp4")
+                    video_path = generate_hook(
+                        input_video_path=video_path,
+                        hook_text=hook_text,
+                        output_path=hook_output_path,
+                        duration=hook_duration,
+                        hook_style=hook_style,
+                        log=log,
+                        gpu_config=gpu_config,
+                    )
+                    log(f"[{i}/{total}] Hook generation complete")
                 if clip_words:
                     caption_output_path = str(temp_dir / f"captioned_{i:03d}.mp4")
                     video_path = generate_captions_from_words(
@@ -497,38 +586,20 @@ def process_selected_highlights(
                         gpu_config=gpu_config,
                     )
                     clip_had_captions = True
-                    log(f"[{i}/{total}] Caption generation complete ({len(clip_words)} segments, from transcription)")
-                else:
-                    log(f"[{i}/{total}] No transcript segments in this clip's range — captions skipped")
-            else:
-                log(f"[{i}/{total}] No transcript for local captions — captions skipped")
-        elif add_captions:
-            log(f"[{i}/{total}] Caption generation skipped (no subtitle word-timing)")
+                    log(f"[{i}/{total}] Caption generation complete ({len(clip_words)} words)")
+                if add_watermark or add_credit_watermark:
+                    watermark_output_path = str(temp_dir / f"watermarked_{i:03d}.mp4")
+                    video_path = apply_watermark(
+                        input_video_path=video_path,
+                        output_path=watermark_output_path,
+                        watermark=wm_config,
+                        credit_watermark=credit_config,
+                        log=log,
+                        gpu_config=gpu_config,
+                    )
+                    log(f"[{i}/{total}] Watermark overlay complete")
         else:
-            log(f"[{i}/{total}] Caption generation skipped (disabled)")
-
-        # Step 5: Watermark overlay (logo + credit text)
-        if add_watermark or add_credit_watermark:
-            wm_config = ai.get("watermark") if add_watermark else None
-            credit_config = _resolve_credit_text(
-                ai.get("credit_watermark") if add_credit_watermark else None,
-                options,
-                session_path,
-                log,
-            )
-
-            watermark_output_path = str(temp_dir / f"watermarked_{i:03d}.mp4")
-            video_path = apply_watermark(
-                input_video_path=video_path,
-                output_path=watermark_output_path,
-                watermark=wm_config,
-                credit_watermark=credit_config,
-                log=log,
-                gpu_config=gpu_config,
-            )
-            log(f"[{i}/{total}] Watermark overlay complete")
-        else:
-            log(f"[{i}/{total}] Watermark overlay skipped (disabled)")
+            log(f"[{i}/{total}] Overlays skipped (none enabled)")
 
         # Step 5.5: Intro/Outro (if enabled)
         # v2.0.142: resolve per-clip paths first - a per-highlight pick

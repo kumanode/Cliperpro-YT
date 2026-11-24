@@ -14,9 +14,12 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "build:sidecar": "./scripts/build-sidecar.sh",
+    "build:sidecar:macos": "bash scripts/build-sidecar-macos.sh",
     "deps": "powershell -ExecutionPolicy Bypass -File scripts/fetch-deps.ps1",
+    "deps:macos": "bash scripts/fetch-deps-macos.sh",
     "package": "powershell -ExecutionPolicy Bypass -File scripts/package-portable.ps1",
     "release": "npm run build:sidecar && npm run build && npm run tauri build && npm run package",
+    "release:macos": "npm run deps:macos && npm run build:sidecar:macos && npm run build && npm run tauri build",
     "tauri": "tauri"
   },
   "dependencies": {

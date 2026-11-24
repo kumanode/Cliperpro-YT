@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "targets": ["dmg", "app"],
+    "resources": {
+      "binaries/ffmpeg/ffmpeg": "ffmpeg/ffmpeg",
+      "binaries/bin/deno": "bin/deno"
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

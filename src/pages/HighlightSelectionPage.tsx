@@ -72,6 +72,26 @@ function stripMs(ts: string): string {
   return ts.split(",")[0];
 }
 
+function parseTsToSeconds(ts: string): number {
+  const clean = (ts || "").trim().replace(",", ".");
+  const parts = clean.split(":").map((p) => Number(p));
+  if (parts.some((n) => Number.isNaN(n))) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+function formatSecondsToTs(totalSec: number): string {
+  const clamped = Math.max(0, totalSec);
+  const h = Math.floor(clamped / 3600);
+  const m = Math.floor((clamped % 3600) / 60);
+  const s = Math.floor(clamped % 60);
+  const ms = Math.round((clamped - Math.floor(clamped)) * 1000);
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+  const pad3 = (n: number) => String(n).padStart(3, "0");
+  return `${pad2(h)}:${pad2(m)}:${pad2(s)},${pad3(ms)}`;
+}
+
 /** File name (with extension) from a Windows or POSIX path; "" stays "".
     Same helper as ProcessConfirmDialog (v2.0.142). */
 function fileNameOf(path: string): string {
@@ -80,7 +100,7 @@ function fileNameOf(path: string): string {
 
 export function HighlightSelectionPage() {
   const navigate = useNavigate();
-  const { session, origin, selectedIndices, toggleSelected, selectAll, deselectAll, getSelectedHighlights, highlightTopics, setHighlightTopic, highlightIntros, highlightOutros, setHighlightIntro, setHighlightOutro } =
+  const { session, origin, selectedIndices, toggleSelected, selectAll, deselectAll, getSelectedHighlights, highlightTopics, setHighlightTopic, highlightIntros, highlightOutros, setHighlightIntro, setHighlightOutro, highlightCaptions, setHighlightCaption, updateHighlightTiming } =
     useSessionStore();
 
   const [showProcessDialog, setShowProcessDialog] = useState(false);
@@ -207,6 +227,11 @@ export function HighlightSelectionPage() {
             outro={highlightOutros[session.session_dir]?.[i] ?? null}
             onIntroChange={(p) => setHighlightIntro(session.session_dir, i, p)}
             onOutroChange={(p) => setHighlightOutro(session.session_dir, i, p)}
+            captionOverride={highlightCaptions[session.session_dir]?.[i] ?? ""}
+            onCaptionOverrideChange={(t) => setHighlightCaption(session.session_dir, i, t)}
+            onAdjustTiming={(startTs, endTs, dur) =>
+              updateHighlightTiming(session.session_dir, i, startTs, endTs, dur)
+            }
             onToggle={() => { if (!processedSet.has(i)) toggleSelected(i); }}
           />
         ))}
@@ -245,6 +270,7 @@ export function HighlightSelectionPage() {
                   // dialog for this clip).
                   introPath: highlightIntros[session.session_dir]?.[originalIndex] ?? null,
                   outroPath: highlightOutros[session.session_dir]?.[originalIndex] ?? null,
+                  captionOverrideText: highlightCaptions[session.session_dir]?.[originalIndex] || undefined,
                 };
               })
               // v2.0.143: send only selected highlights that have NOT been
@@ -288,16 +314,34 @@ interface HighlightCardProps {
   outro: string | null;
   onIntroChange: (path: string | null) => void;
   onOutroChange: (path: string | null) => void;
+  captionOverride: string;
+  onCaptionOverrideChange: (text: string) => void;
+  onAdjustTiming: (startTs: string, endTs: string, durationSec: number) => void;
   onToggle: () => void;
 }
 
-function HighlightCard({ index, highlight, selected, processed, sessionDir, topic, onTopicChange, intro, outro, onIntroChange, onOutroChange, onToggle }: HighlightCardProps) {
+function HighlightCard({ index, highlight, selected, processed, sessionDir, topic, onTopicChange, intro, outro, onIntroChange, onOutroChange, captionOverride, onCaptionOverrideChange, onAdjustTiming, onToggle }: HighlightCardProps) {
   const navigate = useNavigate();
   const { config } = useConfigStore();
   const v = viralityStyle(highlight.virality_score);
   // v2.0.141: per-card state only - generating/copy never touch other cards.
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [editingCaption, setEditingCaption] = useState(false);
+
+  const nudgeEdge = (edge: "start" | "end", deltaSec: number) => {
+    const startSec = parseTsToSeconds(highlight.start_time);
+    const endSec = parseTsToSeconds(highlight.end_time);
+    let nextStart = startSec;
+    let nextEnd = endSec;
+    if (edge === "start") {
+      nextStart = Math.max(0, Math.min(endSec - 1, startSec + deltaSec));
+    } else {
+      nextEnd = Math.max(startSec + 1, endSec + deltaSec);
+    }
+    const nextDur = Math.max(1, Math.round(nextEnd - nextStart));
+    onAdjustTiming(formatSecondsToTs(nextStart), formatSecondsToTs(nextEnd), nextDur);
+  };
 
   const clipPath = `${sessionDir}\\clips\\clip_${String(index).padStart(3, "0")}\\${sanitizeClipFilename(highlight.title)}.mp4`;
 
@@ -533,6 +577,79 @@ function HighlightCard({ index, highlight, selected, processed, sessionDir, topi
               className="h-8 text-sm"
             />
           </div>
+
+          {/* Fine-tune trim & quick caption editor (before render) */}
+          {!processed && (
+            <div className="space-y-2 pt-1 border-t border-[var(--color-border-light)]" onClick={(e) => e.stopPropagation()}>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="text-[var(--color-text-muted)] font-medium">Trim Awal:</span>
+                  {[-5, -1, 1, 5].map((d) => (
+                    <button
+                      key={`s-${d}`}
+                      type="button"
+                      onClick={() => nudgeEdge("start", d)}
+                      className="px-1.5 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:bg-[var(--color-bg-input)] text-[11px] font-medium"
+                    >
+                      {d > 0 ? `+${d}s` : `${d}s`}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="text-[var(--color-text-muted)] font-medium">Akhir:</span>
+                  {[-5, -1, 1, 5].map((d) => (
+                    <button
+                      key={`e-${d}`}
+                      type="button"
+                      onClick={() => nudgeEdge("end", d)}
+                      className="px-1.5 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:bg-[var(--color-bg-input)] text-[11px] font-medium"
+                    >
+                      {d > 0 ? `+${d}s` : `${d}s`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!editingCaption && !captionOverride && highlight.transcript_text) {
+                      onCaptionOverrideChange(highlight.transcript_text);
+                    }
+                    setEditingCaption((prev) => !prev);
+                  }}
+                  className="text-xs underline text-[var(--color-accent)]"
+                >
+                  {editingCaption
+                    ? "Tutup Editor Caption"
+                    : captionOverride
+                      ? "Edit Teks Caption (sudah diubah)"
+                      : "Edit Teks Caption Sebelum Render"}
+                </button>
+                {editingCaption && (
+                  <div className="mt-1.5 space-y-1">
+                    <textarea
+                      value={captionOverride}
+                      onChange={(e) => onCaptionOverrideChange(e.target.value)}
+                      rows={3}
+                      placeholder="Koreksi typo transkripsi di sini (kosongkan untuk memakai teks asli)"
+                      className="w-full px-2.5 py-1.5 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-bg-input)] text-xs text-[var(--color-text-primary)] resize-y"
+                    />
+                    {captionOverride && (
+                      <button
+                        type="button"
+                        onClick={() => onCaptionOverrideChange("")}
+                        className="text-[11px] text-[var(--color-text-muted)] hover:underline"
+                      >
+                        Reset ke transkripsi asli
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Video Intro & Outro per highlight (v2.0.142): picked here,
               before Process Clips. A pick wins for this clip; without one,

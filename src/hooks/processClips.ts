@@ -45,6 +45,10 @@ export interface ProcessOptions {
   outroPath?: string;
   /** Crossfade duration in seconds for intro/outro transitions, 0.1–1.0. Default 0.9. */
   crossfadeDuration?: number;
+  /** Optional background music (BGM) audio file path with auto-ducking. */
+  bgmPath?: string;
+  /** BGM base volume (0.02–1.0, default 0.2). */
+  bgmVolume?: number;
   /** GPU acceleration settings passed to the sidecar for hardware encoding. */
   gpuAcceleration?: {
     enabled: boolean;

@@ -598,23 +598,36 @@ def _chunk_label(seconds: int | None = None) -> str:
     return f"{total} detik"
 
 
-def _transcribe_audio_local(ai: dict[str, Any], wav_path: Path, srt_path: Path,
-                            log: LogFn, model: str) -> None:
+def _transcribe_audio_local(
+    ai: dict[str, Any],
+    wav_path: Path,
+    srt_path: Path,
+    log: LogFn,
+    model: str,
+    words_path: Path | None = None,
+) -> Path | None:
     """Transcribe a local audio file in-process with faster-whisper.
 
     No API key, no upload, no size cap and no chunking. The engine decodes the
     WAV directly, so a 43-minute file is one pass — and because faster-whisper
-    returns real per-segment timestamps, the SRT is more accurate than the
-    cloud path, which only returns one blob of text we have to re-slice.
+    returns real per-segment and per-word timestamps, both the SRT and
+    ``words.json`` (karaoke captions) are accurate.
     """
+    from .job_control import get_cancel_event
+
+    manual_model_path = (ai.get("transcription_model_path") or "").strip()
+    effective_model = manual_model_path if manual_model_path else model
+
     log("Transcribing locally with faster-whisper (no API, no upload)...")
-    segments = local_whisper.transcribe(
+    segments, words = local_whisper.transcribe_with_words(
         wav_path,
-        model=model,
+        model=effective_model,
         language=ai.get("transcription_language") or "id",
         device=ai.get("transcription_device") or None,
         compute_type=ai.get("transcription_compute_type") or None,
         log=log,
+        word_timestamps=True,
+        cancel_event=get_cancel_event(),
     )
     if not segments:
         raise RuntimeError(
@@ -624,9 +637,23 @@ def _transcribe_audio_local(ai: dict[str, Any], wav_path: Path, srt_path: Path,
         )
     _write_srt(srt_path, segments)
     log(f"Transcription saved: {srt_path}")
+    target_words = words_path if words_path is not None else (srt_path.parent / "words.json")
+    saved_words_path: Path | None = None
+    if words:
+        with open(target_words, "w", encoding="utf-8") as wf:
+            json.dump(words, wf, ensure_ascii=False)
+        saved_words_path = target_words
+        log(f"Word timestamps saved: {target_words} ({len(words)} words)")
+    return saved_words_path
 
 
-def _transcribe_audio(ai: dict[str, Any], wav_path: Path, srt_path: Path, log: LogFn) -> None:
+def _transcribe_audio(
+    ai: dict[str, Any],
+    wav_path: Path,
+    srt_path: Path,
+    log: LogFn,
+    words_path: Path | None = None,
+) -> Path | None:
     """Transcribe local audio via an OpenAI-compatible Whisper endpoint.
 
     Uses the transcription-specific provider when configured
@@ -917,6 +944,9 @@ def find_local_highlights_only(
             hot_ranges=hot_ranges,
         )
 
+    words_file = session_dir / "words.json"
+    has_words = words_file.exists() and words_file.stat().st_size > 2
+
     video_info = _local_video_info(source)
     session_data = {
         "session_dir": str(session_dir),
@@ -929,8 +959,8 @@ def find_local_highlights_only(
         "user_direction": (user_direction or "").strip() or None,
         "output_language": (output_language or "auto").strip().lower(),
         "output_language_name": resolve_output_language(output_language, None),
-        "caption_words_path": None,
-        "caption_available": False,
+        "caption_words_path": str(words_file) if has_words else None,
+        "caption_available": bool(has_words),
         "highlights": highlights,
         "video_info": video_info,
         "token_usage": token_usage,

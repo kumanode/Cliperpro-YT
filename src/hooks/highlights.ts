@@ -53,6 +53,8 @@ export interface AIRequestSettings {
   transcription_base_url?: string;
   transcription_model?: string;
   transcription_api_key?: string;
+  transcription_device?: string;
+  transcription_model_path?: string;
   /**
    * v2.0.89: seconds added before/after each clip so a moment does not start
    * mid-sentence. Applied inside the 120s clip cap and clamped to the source

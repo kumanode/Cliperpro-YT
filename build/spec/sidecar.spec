@@ -1,7 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import platform
 import sys
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
+
+def _default_target_triple() -> str:
+    if sys.platform == 'win32':
+        return 'x86_64-pc-windows-msvc'
+    machine = platform.machine().lower()
+    if sys.platform == 'darwin':
+        arch = 'aarch64' if machine in ('arm64', 'aarch64') else 'x86_64'
+        return f'{arch}-apple-darwin'
+    arch = 'aarch64' if machine in ('arm64', 'aarch64') else 'x86_64'
+    return f'{arch}-unknown-linux-gnu'
+
+TARGET_TRIPLE = os.environ.get('SIDECAR_TARGET_TRIPLE') or _default_target_triple()
+print(f"[sidecar.spec] Building sidecar for target triple: {TARGET_TRIPLE}")
 
 block_cipher = None
 
@@ -160,14 +174,14 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='ytclip-sidecar-x86_64-pc-windows-msvc',
+    name=f'ytclip-sidecar-{TARGET_TRIPLE}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=(sys.platform == 'win32'),
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=(sys.platform != 'win32'),
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

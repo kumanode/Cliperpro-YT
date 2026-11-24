@@ -269,6 +269,10 @@ export function CreatePage() {
           transcription_base_url: hf.transcriptionBaseUrl?.trim() || undefined,
           transcription_model: hf.transcriptionModel?.trim() || undefined,
           transcription_api_key: hf.transcriptionApiKey?.trim() || undefined,
+          transcription_device: hf.transcriptionDevice && hf.transcriptionDevice !== "auto"
+            ? hf.transcriptionDevice
+            : undefined,
+          transcription_model_path: hf.transcriptionModelPath?.trim() || undefined,
           // v2.0.89: only meaningful for the local-file flow, which is the
           // only one that transcribes and can therefore build a heatmap.
           pre_padding: prePadding,

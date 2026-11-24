@@ -19,6 +19,10 @@ export interface AIProviderSettings {
   transcriptionBaseUrl?: string;
   transcriptionModel?: string;
   transcriptionApiKey?: string;
+  /** Device for local faster-whisper: "auto" | "cpu" | "cuda". */
+  transcriptionDevice?: "auto" | "cpu" | "cuda";
+  /** Optional manual folder path to a pre-downloaded CTranslate2 faster-whisper model. */
+  transcriptionModelPath?: string;
 }
 
 export interface WatermarkSettings {
@@ -125,6 +129,8 @@ export const DEFAULT_CONFIG: AppConfig = {
     transcriptionBaseUrl: "",
     transcriptionModel: "",
     transcriptionApiKey: "",
+    transcriptionDevice: "auto",
+    transcriptionModelPath: "",
   },
   gpuAcceleration: {
     enabled: false,
@@ -223,6 +229,102 @@ export interface GpuDetection {
 
 export async function detectGpu(): Promise<GpuDetection> {
   return invoke<GpuDetection>("detect_gpu");
+}
+
+export interface CachedWhisperModel {
+  dir_name: string;
+  name: string;
+  size_bytes: number;
+  size_mb: number;
+}
+
+export interface LocalWhisperProbe {
+  available: boolean;
+  reason?: string;
+  version: string | null;
+  device?: string;
+  compute_type?: string;
+  cuda_ready?: boolean;
+  cuda_reason?: string | null;
+  cache_dir?: string;
+  cached_models?: CachedWhisperModel[];
+  cache_total_mb?: number;
+  models?: string[];
+}
+
+export async function probeLocalWhisper(): Promise<LocalWhisperProbe> {
+  return invoke<LocalWhisperProbe>("probe_local_whisper");
+}
+
+export async function deleteLocalWhisperModel(
+  dirName: string
+): Promise<{ deleted: string; freed_bytes: number; freed_mb: number }> {
+  return invoke("delete_local_whisper_model", { dirName });
+}
+
+export interface LocalWhisperPathValidation {
+  valid: boolean;
+  resolved_path: string | null;
+  name: string | null;
+  size_mb: number;
+  error: string | null;
+}
+
+export async function validateLocalWhisperPath(
+  modelPath: string
+): Promise<LocalWhisperPathValidation> {
+  return invoke<LocalWhisperPathValidation>("validate_local_whisper_path", { modelPath });
+}
+
+export async function cancelActiveJob(): Promise<boolean> {
+  return invoke<boolean>("cancel_active_job");
+}
+
+export interface StorageSourceItem {
+  filename: string;
+  size_bytes: number;
+  size_mb: number;
+  age_days: number;
+  modified_at: string;
+}
+
+export interface StorageSummary {
+  output_dir: string;
+  total_bytes: number;
+  total_mb: number;
+  source_videos: {
+    count: number;
+    size_bytes: number;
+    size_mb: number;
+    items: StorageSourceItem[];
+  };
+  sessions: {
+    count: number;
+    size_bytes: number;
+    size_mb: number;
+  };
+  whisper_models: {
+    count: number;
+    size_bytes: number;
+    size_mb: number;
+    items: CachedWhisperModel[];
+  };
+}
+
+export async function getStorageSummary(): Promise<StorageSummary> {
+  return invoke<StorageSummary>("get_storage_summary");
+}
+
+export async function cleanupStorage(params: {
+  action: "source_videos_older_than" | "source_video_file" | "all_source_videos";
+  olderThanDays?: number;
+  filename?: string;
+}): Promise<{ deleted_count: number; freed_bytes: number; freed_mb: number }> {
+  return invoke("cleanup_storage", {
+    action: params.action,
+    olderThanDays: params.olderThanDays ?? 7,
+    filename: params.filename ?? null,
+  });
 }
 
 export interface FontInfo {

@@ -10,6 +10,7 @@ import {
   EyeOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { processClips, type ProcessOptions } from "@/hooks/processClips";
@@ -182,6 +183,11 @@ export function ProcessingClipsPage() {
           ) {
             st.setStep(2);
           } else if (
+            m.includes("single-pass overlay compose complete") ||
+            m.includes("overlays skipped")
+          ) {
+            st.setStep(5);
+          } else if (
             m.includes("hook generation complete") ||
             m.includes("hook complete") ||
             m.includes("hook generation skipped")
@@ -306,20 +312,40 @@ export function ProcessingClipsPage() {
           {isComplete || error ? "Back to Create" : "Processing..."}
         </Button>
 
-        {/* Log on/off toggle — always visible on this page */}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={toggleShowLogs}
-          className={cn(
-            "gap-2",
-            showLogs ? "text-[var(--color-accent)]" : "text-[var(--color-text-muted)]"
+        <div className="flex items-center gap-2">
+          {!isComplete && !error && active && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                try {
+                  const { cancelActiveJob } = await import("@/hooks/appConfig");
+                  await cancelActiveJob();
+                  toast.info("Membatalkan render klip...");
+                } catch (e) {
+                  toast.error(String(e));
+                }
+              }}
+              className="gap-1.5 text-[var(--color-error)] border-[var(--color-error)]"
+            >
+              Cancel
+            </Button>
           )}
-          title={showLogs ? "Hide log console" : "Show log console"}
-        >
-          {showLogs ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-          {showLogs ? "Log: On" : "Log: Off"}
-        </Button>
+          {/* Log on/off toggle — always visible on this page */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleShowLogs}
+            className={cn(
+              "gap-2",
+              showLogs ? "text-[var(--color-accent)]" : "text-[var(--color-text-muted)]"
+            )}
+            title={showLogs ? "Hide log console" : "Show log console"}
+          >
+            {showLogs ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+            {showLogs ? "Log: On" : "Log: Off"}
+          </Button>
+        </div>
       </div>
 
       <div>

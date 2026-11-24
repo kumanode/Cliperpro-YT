@@ -1,0 +1,150 @@
+name: build-release-macos
+
+# Builds the macOS desktop app (.dmg + .app) on GitHub macOS runners and
+# uploads the artifacts (plus attaches them to the GitHub Release on tags).
+#
+# Triggers:
+#   - push a tag like v2.0.143 -> builds Apple Silicon (.dmg) & uploads to Release
+#   - manual run (workflow_dispatch) -> choose Apple Silicon, Intel, or both
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label (e.g. 2.0.143). Leave empty to use package.json version."
+        required: false
+        type: string
+      arch:
+        description: "Target macOS architecture"
+        required: false
+        default: "arm64"
+        type: choice
+        options:
+          - arm64
+          - x86_64
+          - both
+      publish_release:
+        description: "Upload DMG to GitHub Release"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            rust_target: aarch64-apple-darwin
+          - arch: x86_64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+
+    if: >-
+      github.event_name == 'push' && matrix.arch == 'arm64' ||
+      github.event_name == 'workflow_dispatch' && (
+        github.event.inputs.arch == 'both' ||
+        github.event.inputs.arch == matrix.arch
+      )
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version label
+        id: version
+        run: |
+          v="${{ github.event.inputs.version }}"
+          v="$(echo "$v" | xargs)"
+          if [[ -z "$v" && "${{ github.ref_type }}" == "tag" ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ -z "$v" ]]; then
+            v="$(node -p "require('./package.json').version")"
+          fi
+          echo "VERSION=$v" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $v"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies (sidecar)
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt pyinstaller
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Fetch bundled macOS dependencies (ffmpeg, deno, face_landmarker)
+        run: bash scripts/fetch-deps-macos.sh --arch "${{ matrix.arch }}"
+
+      - name: Build Python sidecar (PyInstaller)
+        run: PYTHON=python3 bash scripts/build-sidecar-macos.sh --arch "${{ matrix.arch }}"
+
+      - name: Build frontend (Vite)
+        run: npm run build
+
+      - name: Build Tauri macOS app + DMG
+        run: npm run tauri build -- --target "${{ matrix.rust_target }}"
+
+      - name: Collect DMG artifact
+        id: dmg
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          ARCH="${{ matrix.arch }}"
+          DMG_SRC="$(find "src-tauri/target/${{ matrix.rust_target }}/release/bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)"
+          if [[ -z "$DMG_SRC" ]]; then
+            echo "ERROR: No .dmg found in bundle output!" >&2
+            exit 1
+          fi
+          OUT_DIR="build/macos-release"
+          mkdir -p "$OUT_DIR"
+          DMG_OUT="$OUT_DIR/Cliperpro_${VERSION}_macos_${ARCH}.dmg"
+          cp "$DMG_SRC" "$DMG_OUT"
+          echo "DMG_PATH=$DMG_OUT" >> "$GITHUB_OUTPUT"
+          ls -lh "$DMG_OUT"
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cliperpro-macos-${{ matrix.arch }}
+          path: ${{ steps.dmg.outputs.DMG_PATH }}
+          if-no-files-found: error
+
+      - name: Attach DMG to GitHub Release
+        if: github.event_name == 'push' || github.event.inputs.publish_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          TAG="v${VERSION}"
+          DMG_PATH="${{ steps.dmg.outputs.DMG_PATH }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "Cliperpro $VERSION" \
+              --notes "macOS build ($VERSION)" \
+              --target main
+          fi
+          gh release upload "$TAG" "$DMG_PATH" --clobber

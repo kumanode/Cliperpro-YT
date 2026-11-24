@@ -73,7 +73,27 @@ def _resource_dirs() -> list[Path]:
     dir for installs that put resources there.
     """
     app_dir = _get_app_dir()
-    candidates = [
+    candidates: list[Path] = []
+
+    # Explicit resource dir passed by the Tauri host (covers macOS .app/Contents/Resources,
+    # Windows MSI/NSIS, and Linux AppImage/deb reliably).
+    env_res_dir = os.environ.get("YTCLIP_RESOURCE_DIR", "").strip()
+    if env_res_dir:
+        candidates.append(Path(env_res_dir))
+
+    # On macOS frozen builds, _get_app_dir() points to ~/Library/Application Support/...
+    # whereas Tauri places bundled resources in <App>.app/Contents/Resources alongside
+    # Contents/MacOS/<sidecar>.
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates += [
+            exe_dir,
+            exe_dir / "resources",
+            exe_dir.parent / "Resources",
+            exe_dir.parent / "resources",
+        ]
+
+    candidates += [
         app_dir,
         app_dir / "resources",
         app_dir.parent,

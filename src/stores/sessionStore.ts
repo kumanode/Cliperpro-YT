@@ -26,6 +26,17 @@ interface SessionState {
   highlightOutros: Record<string, Record<number, string>>;
   setHighlightIntro: (sessionDir: string, index: number, path: string | null) => void;
   setHighlightOutro: (sessionDir: string, index: number, path: string | null) => void;
+  /** Per-highlight edited caption text override before burn-in. */
+  highlightCaptions: Record<string, Record<number, string>>;
+  setHighlightCaption: (sessionDir: string, index: number, text: string) => void;
+  /** Fine-tune start/end timestamps on a highlight before rendering. */
+  updateHighlightTiming: (
+    sessionDir: string,
+    index: number,
+    startTime: string,
+    endTime: string,
+    durationSeconds: number
+  ) => void;
   toggleSelected: (index: number) => void;
   selectAll: () => void;
   deselectAll: () => void;
@@ -54,6 +65,29 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   highlightIntros: {},
   highlightOutros: {},
+  highlightCaptions: {},
+
+  setHighlightCaption: (sessionDir, index, text) =>
+    set((state) => {
+      const perSession = { ...(state.highlightCaptions[sessionDir] ?? {}) };
+      if (!text.trim()) delete perSession[index];
+      else perSession[index] = text;
+      return {
+        highlightCaptions: { ...state.highlightCaptions, [sessionDir]: perSession },
+      };
+    }),
+
+  updateHighlightTiming: (sessionDir, index, startTime, endTime, durationSeconds) =>
+    set((state) => {
+      const session = state.session;
+      if (!session || session.session_dir !== sessionDir) return {};
+      const nextHighlights = session.highlights.map((h, i) =>
+        i === index
+          ? { ...h, start_time: startTime, end_time: endTime, duration_seconds: durationSeconds }
+          : h
+      );
+      return { session: { ...session, highlights: nextHighlights } };
+    }),
 
   // v2.0.142: store an intro video path for one highlight. A null path
   // removes the pick (fall back to the global intro). Guarded by

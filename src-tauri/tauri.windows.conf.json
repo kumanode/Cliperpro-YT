@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "binaries/ffmpeg/ffmpeg.exe": "ffmpeg/ffmpeg.exe",
+      "binaries/bin/deno.exe": "bin/deno.exe",
+      "binaries/bin/aria2c.exe": "bin/aria2c.exe"
+    }
+  }
+}

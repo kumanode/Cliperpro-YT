@@ -101,6 +101,53 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
     if command == "ping":
         return {"pong": True}
 
+    if command == "cancel_job":
+        from yt_short_clipper_core.job_control import request_cancel
+
+        killed = request_cancel()
+        return {"cancelled": True, "terminated_subprocesses": killed}
+
+    if command == "probe_local_whisper":
+        from yt_short_clipper_core import local_whisper
+
+        return local_whisper.probe()
+
+    if command == "delete_local_whisper_model":
+        from yt_short_clipper_core import local_whisper
+
+        dir_name = payload.get("dir_name")
+        if not dir_name:
+            raise SidecarError("Missing payload.dir_name")
+        return local_whisper.delete_cached_model(str(dir_name))
+
+    if command == "validate_local_whisper_path":
+        from yt_short_clipper_core import local_whisper
+
+        model_path = payload.get("model_path") or ""
+        return local_whisper.validate_local_model_path(str(model_path))
+
+    if command == "get_storage_summary":
+        from yt_short_clipper_core.storage_manager import get_storage_summary
+
+        output_dir = payload.get("output_dir")
+        if not output_dir:
+            raise SidecarError("Missing payload.output_dir")
+        return get_storage_summary(output_dir)
+
+    if command == "cleanup_storage":
+        from yt_short_clipper_core.storage_manager import cleanup_storage
+
+        output_dir = payload.get("output_dir")
+        action = payload.get("action")
+        if not output_dir or not action:
+            raise SidecarError("Missing payload.output_dir or payload.action")
+        return cleanup_storage(
+            output_dir,
+            action=str(action),
+            older_than_days=int(payload.get("older_than_days", 7)),
+            filename=payload.get("filename"),
+        )
+
     if command == "repliz_list_accounts":
         from yt_short_clipper_core.repliz import list_accounts
 

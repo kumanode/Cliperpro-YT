@@ -3,10 +3,50 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use tauri::ipc::Channel;
 use tauri::Manager;
+
+static ACTIVE_SIDECAR_PID: Mutex<Option<u32>> = Mutex::new(None);
+
+fn set_active_sidecar_pid(pid: Option<u32>) {
+    if let Ok(mut guard) = ACTIVE_SIDECAR_PID.lock() {
+        *guard = pid;
+    }
+}
+
+fn terminate_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+}
+
+#[tauri::command]
+pub fn cancel_active_job() -> Result<bool, String> {
+    let pid = ACTIVE_SIDECAR_PID
+        .lock()
+        .map_err(|_| "Lock poisoned".to_string())?
+        .take();
+    if let Some(p) = pid {
+        terminate_process_tree(p);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
 
 const REQUIRED_COOKIES: [&str; 6] = ["SID", "HSID", "SSID", "APISID", "SAPISID", "LOGIN_INFO"];
 const SECURE_COOKIE_PREFIXES: [&str; 2] = ["__Secure-1P", "__Secure-3P"];
@@ -15,7 +55,9 @@ const SECURE_COOKIE_PREFIXES: [&str; 2] = ["__Secure-1P", "__Secure-3P"];
 const SIDECAR_BINARY: &str = "ytclip-sidecar-x86_64-pc-windows-msvc.exe";
 #[cfg(windows)]
 const SIDECAR_BINARY_BARE: &str = "ytclip-sidecar.exe";
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const SIDECAR_BINARY: &str = "ytclip-sidecar-aarch64-apple-darwin";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const SIDECAR_BINARY: &str = "ytclip-sidecar-x86_64-apple-darwin";
 #[cfg(target_os = "macos")]
 const SIDECAR_BINARY_BARE: &str = "ytclip-sidecar";
@@ -122,6 +164,85 @@ pub async fn detect_gpu(app: tauri::AppHandle) -> Result<serde_json::Value, Stri
     tauri::async_runtime::spawn_blocking(move || call_sidecar(&app, "detect_gpu", serde_json::json!({})))
         .await
         .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn probe_local_whisper(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        call_sidecar(&app, "probe_local_whisper", serde_json::json!({}))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn delete_local_whisper_model(
+    app: tauri::AppHandle,
+    dir_name: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        call_sidecar(
+            &app,
+            "delete_local_whisper_model",
+            serde_json::json!({ "dir_name": dir_name }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn validate_local_whisper_path(
+    app: tauri::AppHandle,
+    model_path: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        call_sidecar(
+            &app,
+            "validate_local_whisper_path",
+            serde_json::json!({ "model_path": model_path }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_storage_summary(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output_dir = cookies_dir(&app)?.join("output");
+        call_sidecar(
+            &app,
+            "get_storage_summary",
+            serde_json::json!({ "output_dir": output_dir.to_string_lossy() }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn cleanup_storage(
+    app: tauri::AppHandle,
+    action: String,
+    older_than_days: Option<u32>,
+    filename: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let output_dir = cookies_dir(&app)?.join("output");
+        call_sidecar(
+            &app,
+            "cleanup_storage",
+            serde_json::json!({
+                "output_dir": output_dir.to_string_lossy(),
+                "action": action,
+                "older_than_days": older_than_days.unwrap_or(7),
+                "filename": filename,
+            }),
+        )
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[derive(Clone, Serialize)]
@@ -743,6 +864,7 @@ fn call_sidecar_once(
     });
 
     let mut child = spawn_sidecar(app)?;
+    set_active_sidecar_pid(Some(child.id()));
 
     {
         let stdin = child
@@ -974,6 +1096,7 @@ fn call_sidecar_streaming_process_once(
     });
 
     let mut child = spawn_sidecar(app)?;
+    set_active_sidecar_pid(Some(child.id()));
 
     {
         let mut stdin = child
@@ -1026,6 +1149,7 @@ fn call_sidecar_streaming_process_once(
     }
     let _ = child.kill();
     let _ = child.wait();
+    set_active_sidecar_pid(None);
 
     let response =
         final_response.ok_or_else(|| no_response_error(&stderr))?;
@@ -1067,6 +1191,7 @@ fn call_sidecar_streaming_once(
     });
 
     let mut child = spawn_sidecar(app)?;
+    set_active_sidecar_pid(Some(child.id()));
 
     // Write the request, then DROP stdin so the sidecar's stdin loop ends.
     // Without this, the sidecar keeps waiting for more input and never exits,
@@ -1125,6 +1250,7 @@ fn call_sidecar_streaming_once(
     }
     let _ = child.kill();
     let _ = child.wait();
+    set_active_sidecar_pid(None);
 
     let response =
         final_response.ok_or_else(|| no_response_error(&stderr))?;
@@ -1255,6 +1381,7 @@ fn spawn_command(
     program: impl AsRef<std::ffi::OsStr>,
     args: &[&str],
     scratch: Option<&std::path::Path>,
+    resource_dir: Option<&std::path::Path>,
 ) -> Result<std::process::Child, std::io::Error> {
     let mut cmd = Command::new(program);
     cmd.args(args)
@@ -1262,10 +1389,15 @@ fn spawn_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Redirect the onefile extraction out of %TEMP%. See sidecar_scratch_dir.
+    // Redirect the onefile extraction out of %TEMP% / $TMPDIR. See sidecar_scratch_dir.
     if let Some(dir) = scratch {
         cmd.env("TEMP", dir);
         cmd.env("TMP", dir);
+        cmd.env("TMPDIR", dir);
+    }
+
+    if let Some(res_dir) = resource_dir {
+        cmd.env("YTCLIP_RESOURCE_DIR", res_dir);
     }
 
     #[cfg(windows)]
@@ -1276,9 +1408,10 @@ fn spawn_command(
 
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<std::process::Child, String> {
     let scratch = sidecar_scratch_dir(app);
+    let resource_dir = app.path().resource_dir().ok();
 
     if let Some(path) = resolve_sidecar_binary(app) {
-        return spawn_command(path, &[], scratch.as_deref())
+        return spawn_command(path, &[], scratch.as_deref(), resource_dir.as_deref())
             .map_err(|e| format!("Failed to start bundled sidecar: {e}"));
     }
 
