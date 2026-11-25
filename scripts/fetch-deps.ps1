@@ -1,4 +1,4 @@
-# Downloads bundled runtime dependencies (ffmpeg, deno) into src-tauri/binaries
+﻿# Downloads bundled runtime dependencies (ffmpeg, deno) into src-tauri/binaries
 # so they can be shipped with the app. Idempotent: skips files that already exist.
 
 param(
@@ -18,6 +18,25 @@ $TempDir = Join-Path $Root "build\deps-temp"
 New-Item -ItemType Directory -Path $FfmpegDir -Force | Out-Null
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
+
+function Extract-ZipFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$ZipPath,
+        [Parameter(Mandatory = $true)][string]$DestDir
+    )
+    if (Test-Path -LiteralPath $DestDir) {
+        Remove-Item -Recurse -Force $DestDir
+    }
+    New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+    # Avoid Windows PowerShell 5.1 Expand-Archive bug on newer Microsoft.PowerShell.Archive
+    # ("Cannot find an overload for ExtractToDirectory and the argument count: 3").
+    if (Get-Command tar.exe -ErrorAction SilentlyContinue) {
+        & tar.exe -xf $ZipPath -C $DestDir
+        if ($LASTEXITCODE -eq 0) { return }
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $DestDir)
+}
 
 # ---------------------------------------------------------------------------
 # FFmpeg (gyan.dev GPL full build — includes libass/libx264/nvenc/qsv/amf)
@@ -43,8 +62,7 @@ if ((Test-Path -LiteralPath $FfmpegExe) -and (-not $Force)) {
 
     Write-Host "[fetch-deps] Extracting ffmpeg..."
     $FfmpegExtract = Join-Path $TempDir "ffmpeg-extract"
-    if (Test-Path -LiteralPath $FfmpegExtract) { Remove-Item -Recurse -Force $FfmpegExtract }
-    Expand-Archive -Path $FfmpegZip -DestinationPath $FfmpegExtract -Force
+    Extract-ZipFile -ZipPath $FfmpegZip -DestDir $FfmpegExtract
 
     # The zip contains a versioned folder like ffmpeg-7.x-essentials_build/bin/ffmpeg.exe
     $FoundFfmpeg = Get-ChildItem -Path $FfmpegExtract -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
@@ -70,8 +88,7 @@ if ((Test-Path -LiteralPath $DenoExe) -and (-not $Force)) {
 
     Write-Host "[fetch-deps] Extracting deno..."
     $DenoExtract = Join-Path $TempDir "deno-extract"
-    if (Test-Path -LiteralPath $DenoExtract) { Remove-Item -Recurse -Force $DenoExtract }
-    Expand-Archive -Path $DenoZip -DestinationPath $DenoExtract -Force
+    Extract-ZipFile -ZipPath $DenoZip -DestDir $DenoExtract
 
     $FoundDeno = Get-ChildItem -Path $DenoExtract -Recurse -Filter "deno.exe" | Select-Object -First 1
     if (-not $FoundDeno) {
@@ -110,8 +127,7 @@ if ((Test-Path -LiteralPath $Aria2Exe) -and (-not $Force)) {
 
     Write-Host "[fetch-deps] Extracting aria2c..."
     $Aria2Extract = Join-Path $TempDir "aria2-extract"
-    if (Test-Path -LiteralPath $Aria2Extract) { Remove-Item -Recurse -Force $Aria2Extract }
-    Expand-Archive -Path $Aria2Zip -DestinationPath $Aria2Extract -Force
+    Extract-ZipFile -ZipPath $Aria2Zip -DestDir $Aria2Extract
 
     $FoundAria2 = Get-ChildItem -Path $Aria2Extract -Recurse -Filter "aria2c.exe" | Select-Object -First 1
     if (-not $FoundAria2) {

@@ -112,7 +112,7 @@ jobs:
       - name: Package portable zips
         shell: pwsh
         run: |
-          powershell -ExecutionPolicy Bypass -File scripts/package-portable.ps1 -Version "${{ steps.version.outputs.VERSION }}"
+          pwsh -ExecutionPolicy Bypass -File scripts/package-portable.ps1 -Version "${{ steps.version.outputs.VERSION }}"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
